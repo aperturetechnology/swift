@@ -2541,6 +2541,76 @@ ModuleFile::getDeclCheckedImpl(DeclID DID) {
         break;
       }
 
+      // SWIFT_ENABLE_TENSORFLOW
+      case decls_block::Differentiable_DECL_ATTR: {
+        AutoDiffMode autodiffMode = AutoDiffMode::Reverse;
+        unsigned autodiffModeValue;
+        uint64_t primalNameId;
+        DeclID primalDeclId;
+        uint64_t adjointNameId;
+        DeclID adjointDeclId;
+        uint64_t jvpNameId;
+        DeclID jvpDeclId;
+        uint64_t vjpNameId;
+        DeclID vjpDeclId;
+        ArrayRef<uint64_t> paramValues;
+
+        serialization::decls_block::DifferentiableDeclAttrLayout::readRecord(
+            scratch, autodiffModeValue, primalNameId, primalDeclId,
+            adjointNameId, adjointDeclId, jvpNameId, jvpDeclId, vjpNameId,
+            vjpDeclId, paramValues);
+        autodiffMode = autodiffModeValue
+          ? AutoDiffMode::Reverse
+          : AutoDiffMode::Forward;
+
+        using FuncSpecifier = DifferentiableAttr::DeclNameWithLoc;
+        Optional<FuncSpecifier> primal;
+        FuncDecl *primalDecl = nullptr;
+        if (primalNameId != 0 && primalDeclId != 0) {
+          primal = { getIdentifier(primalNameId), DeclNameLoc() };
+          primalDecl = cast<FuncDecl>(getDecl(primalDeclId));
+        }
+        Optional<FuncSpecifier> adjoint;
+        FuncDecl *adjointDecl = nullptr;
+        if (adjointNameId != 0 && adjointDeclId != 0) {
+          adjoint = { getIdentifier(adjointNameId), DeclNameLoc() };
+          adjointDecl = cast<FuncDecl>(getDecl(adjointDeclId));
+        }
+        Optional<FuncSpecifier> jvp;
+        FuncDecl *jvpDecl = nullptr;
+        if (jvpNameId != 0 && jvpDeclId != 0) {
+          jvp = { getIdentifier(jvpNameId), DeclNameLoc() };
+          jvpDecl = cast<FuncDecl>(getDecl(jvpDeclId));
+        }
+        Optional<FuncSpecifier> vjp;
+        FuncDecl *vjpDecl = nullptr;
+        if (vjpNameId != 0 && vjpDeclId != 0) {
+          vjp = { getIdentifier(vjpNameId), DeclNameLoc() };
+          vjpDecl = cast<FuncDecl>(getDecl(vjpDeclId));
+        }
+
+        SmallVector<AutoDiffParameter, 4> parameters;
+        SourceLoc loc;
+        for (auto paramValue : paramValues) {
+          auto parameter = paramValue & 0x01
+            ? AutoDiffParameter::getSelfParameter(loc)
+            : AutoDiffParameter::getIndexParameter(loc, paramValue >> 1);
+          parameters.push_back(parameter);
+        }
+        // TODO: Deserialize CheckedParameterIndices.
+        // TODO: Deserialize trailing where clause.
+        auto diffAttr =
+          DifferentiableAttr::create(ctx, loc, SourceRange(), autodiffMode,
+                                     loc, parameters, primal, adjoint, jvp,
+                                     vjp, /*TrailingWhereClause*/ nullptr);
+        diffAttr->setPrimalFunction(primalDecl);
+        diffAttr->setAdjointFunction(adjointDecl);
+        diffAttr->setJVPFunction(jvpDecl);
+        diffAttr->setVJPFunction(vjpDecl);
+        Attr = diffAttr;
+        break;
+      }
+
 #define SIMPLE_DECL_ATTR(NAME, CLASS, ...) \
       case decls_block::CLASS##_DECL_ATTR: { \
         bool isImplicit; \
@@ -4032,6 +4102,8 @@ getActualFunctionTypeRepresentation(uint8_t rep) {
   CASE(Block)
   CASE(Thin)
   CASE(CFunctionPointer)
+  // SWIFT_ENABLE_TENSORFLOW
+  CASE(TensorFlow)
 #undef CASE
   default:
     return None;
@@ -4056,6 +4128,29 @@ getActualSILFunctionTypeRepresentation(uint8_t rep) {
   CASE(Method)
   CASE(ObjCMethod)
   CASE(WitnessMethod)
+  // SWIFT_ENABLE_TENSORFLOW
+  CASE(TensorFlow)
+#undef CASE
+  default:
+    return None;
+  }
+}
+
+// SWIFT_ENABLE_TENSORFLOW
+/// Translate from the Serialization function type differentiability enum values
+/// to the AST strongly-typed enum.
+static Optional<swift::FunctionType::Differentiability>
+getActualFunctionTypeDifferentiability(uint8_t diff) {
+  switch (diff) {
+#define CASE(THE_DIFF) \
+  case (uint8_t)serialization::FunctionTypeDifferentiability::THE_DIFF: \
+    return swift::FunctionType::Differentiability::THE_DIFF;
+  CASE(None)
+  CASE(Forward)
+  CASE(Reverse)
+  CASE(Bidirectional)
+  CASE(Linear)
+  CASE(Constant)
 #undef CASE
   default:
     return None;
@@ -4393,8 +4488,10 @@ Expected<Type> ModuleFile::getTypeChecked(TypeID TID) {
   case decls_block::FUNCTION_TYPE:
   case decls_block::GENERIC_FUNCTION_TYPE: {
     TypeID resultID;
-    uint8_t rawRepresentation;
-    bool autoClosure = false, noescape = false, throws;
+    // SWIFT_ENABLE_TENSORFLOW
+    uint8_t rawRepresentation, rawDifferentiability;
+    
+    bool autoClosure = false, noescape = false, throws = false;
     GenericSignature *genericSig = nullptr;
 
     if (recordID == decls_block::FUNCTION_TYPE) {
@@ -4402,14 +4499,18 @@ Expected<Type> ModuleFile::getTypeChecked(TypeID TID) {
                                                   rawRepresentation,
                                                   autoClosure,
                                                   noescape,
-                                                  throws);
+                                                  // SWIFT_ENABLE_TENSORFLOW
+                                                  throws,
+                                                  rawDifferentiability);
     } else {
       GenericSignatureID rawGenericSig;
       decls_block::GenericFunctionTypeLayout::readRecord(scratch,
                                                          resultID,
                                                          rawRepresentation,
                                                          throws,
-                                                         rawGenericSig);
+                                                         // SWIFT_ENABLE_TENSORFLOW
+                                                         rawGenericSig,
+                                                         rawDifferentiability);
       genericSig = getGenericSignature(rawGenericSig);
     }
 
@@ -4418,9 +4519,18 @@ Expected<Type> ModuleFile::getTypeChecked(TypeID TID) {
       error();
       return nullptr;
     }
+
+    // SWIFT_ENABLE_TENSORFLOW
+    auto diffability =
+        getActualFunctionTypeDifferentiability(rawDifferentiability);
+    if (!diffability.hasValue()) {
+      error();
+      return nullptr;
+    }
     
     auto info = FunctionType::ExtInfo(*representation, autoClosure, noescape,
-                                      throws);
+                                      // SWIFT_ENABLE_TENSORFLOW
+                                      throws, *diffability);
 
     auto resultTy = getTypeChecked(resultID);
     if (!resultTy)
@@ -4440,11 +4550,14 @@ Expected<Type> ModuleFile::getTypeChecked(TypeID TID) {
 
       IdentifierID labelID;
       TypeID typeID;
-      bool isVariadic, isAutoClosure, isEscaping;
+      // SWIFT_ENABLE_TENSORFLOW
+      bool isVariadic, isAutoClosure, isEscaping, isNonDifferentiable;
       unsigned rawOwnership;
       decls_block::FunctionParamLayout::readRecord(scratch, labelID, typeID,
                                                    isVariadic, isAutoClosure,
-                                                   isEscaping, rawOwnership);
+                                                   // SWIFT_ENABLE_TENSORFLOW
+                                                   isEscaping, rawOwnership,
+                                                   isNonDifferentiable);
 
       auto ownership =
           getActualValueOwnership((serialization::ValueOwnership)rawOwnership);
@@ -4460,7 +4573,9 @@ Expected<Type> ModuleFile::getTypeChecked(TypeID TID) {
       params.emplace_back(paramTy.get(),
                           getIdentifier(labelID),
                           ParameterTypeFlags(isVariadic, isAutoClosure,
-                                             isEscaping, *ownership));
+                                             // SWIFT_ENABLE_TENSORFLOW
+                                             isEscaping, *ownership,
+                                             isNonDifferentiable));
     }
 
     if (recordID == decls_block::FUNCTION_TYPE) {
@@ -4750,6 +4865,8 @@ Expected<Type> ModuleFile::getTypeChecked(TypeID TID) {
     uint8_t rawRepresentation;
     bool pseudogeneric = false;
     bool noescape;
+    // SWIFT_ENABLE_TENSORFLOW
+    uint8_t rawDifferentiability;
     bool hasErrorResult;
     unsigned numParams;
     unsigned numYields;
@@ -4763,6 +4880,8 @@ Expected<Type> ModuleFile::getTypeChecked(TypeID TID) {
                                              rawRepresentation,
                                              pseudogeneric,
                                              noescape,
+                                             // SWIFT_ENABLE_TENSORFLOW
+                                             rawDifferentiability,
                                              hasErrorResult,
                                              numParams,
                                              numYields,
@@ -4777,7 +4896,15 @@ Expected<Type> ModuleFile::getTypeChecked(TypeID TID) {
       error();
       return nullptr;
     }
-    SILFunctionType::ExtInfo extInfo(*representation, pseudogeneric, noescape);
+    // SWIFT_ENABLE_TENSORFLOW
+    auto differentiability
+      = getActualFunctionTypeDifferentiability(rawDifferentiability);
+    if (!differentiability.hasValue()) {
+      error();
+      return nullptr;
+    }
+    SILFunctionType::ExtInfo extInfo(*representation, pseudogeneric, noescape,
+                                     *differentiability);
 
     // Process the coroutine kind.
     auto coroutineKind = getActualSILCoroutineKind(rawCoroutineKind);

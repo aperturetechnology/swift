@@ -98,6 +98,83 @@ private:
   }
 };
 
+/// SWIFT_ENABLE_TENSORFLOW
+/// Differentiable attribute - @differentiable attribute lowered to SIL. This
+/// attribute is used by the automatic differentiation pass to find the autodiff
+/// functions associated with a function: 'primal', 'adjoint', 'jvp', and 'vjp'.
+///
+/// For 'primal' and 'adjoint', the attribute may specify:
+/// - neither,
+/// - just 'adjoint', or
+/// - both 'primal' and 'adjoint'.
+/// The core AD pass synthesizes the missing ones.
+///
+/// Note: 'primal' and 'adjoint' are legacy functions that we will keep around
+/// until we have fully switched to 'jvp' and 'vjp'.
+///
+/// 'jvp' and 'vjp' are optional. We intend for the core AD pass to synthesize
+/// the missing ones.
+///
+/// Note: 'jvp' and 'vjp' are not fully supported yet. In particular, the core
+/// AD pass does not use or synthesize them.
+///
+/// Example:
+///   sil [differentiable primal @foo_primal adjoint @foo_adjoint] @foo
+///     : $(Float) -> Float { ... }
+///   sil [differentiable jvp @foo_jvp vjp @foo_vjp] @foo
+///     : $(Float) -> Float { ... }
+class SILDifferentiableAttr final {
+  friend SILFunction;
+
+private:
+  /// The AD indices.
+  SILAutoDiffIndices indices;
+  /// The primal and adjoint function names.
+  StringRef PrimalName, AdjointName;
+  /// Whether the adjoint is primitive.
+  bool AdjointIsPrimitive;
+  /// The JVP and VJP function names.
+  StringRef JVPName, VJPName;
+
+  SILDifferentiableAttr(const SILAutoDiffIndices &indices,
+                        StringRef primalName,
+                        StringRef adjointName,
+                        bool adjointIsPrimitive,
+                        StringRef jvpName,
+                        StringRef vjpName);
+
+public:
+  static SILDifferentiableAttr *create(
+      SILModule &M, const SILAutoDiffIndices &indices,
+      StringRef primalName = StringRef(), StringRef adjointName = StringRef(),
+      bool adjointIsPrimitive = false, StringRef jvpName = StringRef(),
+      StringRef vjpName = StringRef());
+
+  bool hasPrimal() const { return !PrimalName.empty(); }
+  StringRef getPrimalName() const { assert(hasPrimal()); return PrimalName; }
+  void setPrimalName(StringRef name) { PrimalName = name; }
+
+  bool hasAdjoint() const { return !AdjointName.empty(); }
+  bool isAdjointPrimitive() const { return AdjointIsPrimitive; }
+  StringRef getAdjointName() const { assert(hasAdjoint()); return AdjointName; }
+  void setAdjointName(StringRef name, bool primitive) {
+    AdjointName = name;
+    AdjointIsPrimitive = primitive;
+  }
+
+  bool hasJVP() const { return !JVPName.empty(); }
+  StringRef getJVPName() const { assert(hasJVP()); return JVPName; }
+  void setJVPName(StringRef name) { JVPName = name; }
+
+  bool hasVJP() const { return !VJPName.empty(); }
+  StringRef getVJPName() const { assert(hasVJP()); return VJPName; }
+  void setVJPName(StringRef name) { VJPName = name; }
+
+  const SILAutoDiffIndices &getIndices() const { return indices; }
+
+  void print(llvm::raw_ostream &OS) const;
+};
+
 /// SILFunction - A function body that has been lowered to SIL. This consists of
 /// zero or more SIL SILBasicBlock objects that contain the SILInstruction
 /// objects making up the function.
@@ -198,6 +275,11 @@ private:
 
   /// The function's remaining set of specialize attributes.
   std::vector<SILSpecializeAttr*> SpecializeAttrSet;
+
+  /// SWIFT_ENABLE_TENSORFLOW
+  /// The function's `[differentiable]` attributes.
+  llvm::SmallVector<SILDifferentiableAttr *, 4>
+    DifferentiableAttrs;
 
   /// The function's effects attribute.
   EffectsKind EffectsKindAttr;
@@ -570,6 +652,15 @@ public:
 
   void addSpecializeAttr(SILSpecializeAttr *Attr);
 
+  /// SWIFT_ENABLE_TENSORFLOW
+  ArrayRef<SILDifferentiableAttr *>
+  getDifferentiableAttrs() const {
+    return DifferentiableAttrs;
+  }
+
+  void addDifferentiableAttr(SILDifferentiableAttr *attr) {
+    DifferentiableAttrs.push_back(attr);
+  }
 
   /// Get this function's optimization mode or OptimizationMode::NotSet if it is
   /// not set for this specific function.
@@ -931,6 +1022,9 @@ public:
   /// Like ViewCFG, but the graph does not show the contents of basic blocks.
   void viewCFGOnly() const;
 
+  // SWIFT_ENABLE_TENSORFLOW
+  /// Get estimated code size, for debugging only.
+  unsigned codeSize() const;
 };
 
 inline llvm::raw_ostream &operator<<(llvm::raw_ostream &OS,

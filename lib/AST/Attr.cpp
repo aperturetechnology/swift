@@ -546,6 +546,54 @@ bool DeclAttribute::printImpl(ASTPrinter &Printer, const PrintOptions &Options,
     break;
   }
 
+  // SWIFT_ENABLE_TENSORFLOW
+  case DAK_Differentiable: {
+    Printer.printAttrName("@differentiable");
+    Printer << '(';
+    auto *attr = cast<DifferentiableAttr>(this);
+    switch (attr->getMode()) {
+    case AutoDiffMode::Forward:
+      Printer << "forward";
+      break;
+    case AutoDiffMode::Reverse:
+      Printer << "reverse";
+      break;
+    }
+    auto params = attr->getParameters();
+    // Print differentiation parameters, if any.
+    if (!params.empty()) {
+      Printer << ", wrt: (";
+      interleave(params, [&](const AutoDiffParameter &param) {
+        switch (param.getKind()) {
+        case AutoDiffParameter::Kind::Index:
+          Printer << '.' << param.getIndex();
+          break;
+        case AutoDiffParameter::Kind::Self:
+          Printer << "self";
+          break;
+        }
+      }, [&] {
+        Printer << ", ";
+      });
+      Printer << ")";
+    }
+    // Print primal function name if any.
+    if (auto primal = attr->getPrimal())
+      Printer << ", primal: " << primal->Name;
+    // Print adjoint function name.
+    if (auto adjoint = attr->getAdjoint())
+      Printer << ", adjoint: " << adjoint->Name;
+    // Print jvp function name.
+    if (auto jvp = attr->getJVP())
+      Printer << ", jvp: " << jvp->Name;
+    // Print vjp function name.
+    if (auto vjp = attr->getVJP())
+      Printer << ", vjp: " << vjp->Name;
+    // FIXME: Print 'where' clause, if any.
+    Printer << ")";
+    break;
+  }
+
   case DAK_Count:
     llvm_unreachable("exceed declaration attribute kinds");
 
@@ -668,6 +716,9 @@ StringRef DeclAttribute::getAttrName() const {
     return "_implements";
   case DAK_ClangImporterSynthesizedType:
     return "_clangImporterSynthesizedType";
+  // SWIFT_ENABLE_TENSORFLOW
+  case DAK_Differentiable:
+    return "differentiable";
   }
   llvm_unreachable("bad DeclAttrKind");
 }
@@ -947,6 +998,46 @@ SpecializeAttr *SpecializeAttr::create(ASTContext &Ctx, SourceLoc atLoc,
       SpecializeAttr(atLoc, range, requirements, exported, kind);
 }
 
+// SWIFT_ENABLE_TENSORFLOW
+DifferentiableAttr::DifferentiableAttr(SourceLoc atLoc, SourceRange baseRange,
+                                       AutoDiffMode mode, SourceLoc modeLoc,
+                                       ArrayRef<AutoDiffParameter> parameters,
+                                       Optional<DeclNameWithLoc> primal,
+                                       Optional<DeclNameWithLoc> adjoint,
+                                       Optional<DeclNameWithLoc> jvp,
+                                       Optional<DeclNameWithLoc> vjp,
+                                       TrailingWhereClause *clause)
+  : DeclAttribute(DAK_Differentiable, atLoc, baseRange, /*Implicit*/false),
+    Mode(mode), ModeLoc(modeLoc), NumParameters(parameters.size()),
+    Primal(std::move(primal)), Adjoint(std::move(adjoint)),
+    JVP(std::move(jvp)), VJP(std::move(vjp)), WhereClause(clause) {
+  std::copy(parameters.begin(), parameters.end(), getParametersData());
+}
+
+DifferentiableAttr *
+DifferentiableAttr::create(ASTContext &context, SourceLoc atLoc,
+                           SourceRange baseRange, AutoDiffMode mode,
+                           SourceLoc modeLoc,
+                           ArrayRef<AutoDiffParameter> parameters,
+                           Optional<DeclNameWithLoc> primal,
+                           Optional<DeclNameWithLoc> adjoint,
+                           Optional<DeclNameWithLoc> jvp,
+                           Optional<DeclNameWithLoc> vjp,
+                           TrailingWhereClause *clause) {
+  unsigned numParams = parameters.size();
+  unsigned size = sizeof(DifferentiableAttr) +
+    numParams * sizeof(AutoDiffParameter);
+  void *mem = context.Allocate(size, alignof(DifferentiableAttr));
+  return new (mem) DifferentiableAttr(atLoc, baseRange, mode, modeLoc,
+                                      parameters, std::move(primal),
+                                      std::move(adjoint), std::move(jvp),
+                                      std::move(vjp), clause);
+}
+
+ArrayRef<AutoDiffParameter>
+DifferentiableAttr::getParameters() const {
+  return const_cast<DifferentiableAttr *>(this)->getParameters();
+}
 
 ImplementsAttr::ImplementsAttr(SourceLoc atLoc, SourceRange range,
                                TypeLoc ProtocolType,

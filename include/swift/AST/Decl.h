@@ -3226,6 +3226,11 @@ public:
   /// Is this the decl for Optional<T>?
   bool isOptionalDecl() const;
 
+  // SWIFT_ENABLE_TENSORFLOW
+  /// Retrieve all parameters of the nominal type (instance stored properties
+  /// declared with @TFParameter).
+  void getAllTFParameters(SmallVectorImpl<VarDecl *> &result) const;
+
 private:
   /// Predicate used to filter StoredPropertyRange.
   struct ToStoredProperty {

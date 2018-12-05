@@ -52,7 +52,7 @@ const uint16_t SWIFTMODULE_VERSION_MAJOR = 0;
 /// describe what change you made. The content of this comment isn't important;
 /// it just ensures a conflict if two people change the module format.
 /// Don't worry about adhering to the 80-column limit for this line.
-const uint16_t SWIFTMODULE_VERSION_MINOR = 456; // Last change: encode depth in generic param XREFs
+const uint16_t SWIFTMODULE_VERSION_MINOR = 457; // Last change: add jvp and vjp to sil differentiable attribute
 
 using DeclIDField = BCFixed<31>;
 
@@ -169,6 +169,8 @@ enum class FunctionTypeRepresentation : uint8_t {
   Block,
   Thin,
   CFunctionPointer,
+  // SWIFT_ENABLE_TENSORFLOW
+  TensorFlow,
 };
 using FunctionTypeRepresentationField = BCFixed<4>;
 
@@ -189,7 +191,9 @@ enum class SILFunctionTypeRepresentation : uint8_t {
   Block,
   Thin,
   CFunctionPointer,
-  
+  // SWIFT_ENABLE_TENSORFLOW
+  TensorFlow,
+
   FirstSIL = 8,
   Method = FirstSIL,
   ObjCMethod,
@@ -197,6 +201,19 @@ enum class SILFunctionTypeRepresentation : uint8_t {
   Closure,
 };
 using SILFunctionTypeRepresentationField = BCFixed<4>;
+
+// SWIFT_ENABLE_TENSORFLOW
+// These IDs must \em not be renumbered or reordered without incrementing
+// VERSION_MAJOR.
+enum class FunctionTypeDifferentiability : uint8_t {
+  None = 0,
+  Forward,
+  Reverse,
+  Bidirectional,
+  Linear,
+  Constant,
+};
+using FunctionTypeDifferentiabilityField = BCFixed<3>;
 
 // These IDs must \em not be renumbered or reordered without incrementing
 // the module version.
@@ -733,19 +750,22 @@ namespace decls_block {
     FunctionTypeRepresentationField, // representation
     BCFixed<1>,  // auto-closure?
     BCFixed<1>,  // noescape?
-    BCFixed<1>   // throws?
-
+    // SWIFT_ENABLE_TENSORFLOW
+    BCFixed<1>,  // throws?
+    FunctionTypeDifferentiabilityField // differentiability
     // trailed by parameters
   >;
 
   using FunctionParamLayout = BCRecordLayout<
     FUNCTION_PARAM,
-    IdentifierIDField,  // name
-    TypeIDField,        // type
-    BCFixed<1>,         // vararg?
-    BCFixed<1>,         // autoclosure?
-    BCFixed<1>,         // escaping?
-    ValueOwnershipField // inout, shared or owned?
+    // SWIFT_ENABLE_TENSORFLOW
+    IdentifierIDField,   // name
+    TypeIDField,         // type
+    BCFixed<1>,          // vararg?
+    BCFixed<1>,          // autoclosure?
+    BCFixed<1>,          // escaping?
+    ValueOwnershipField, // inout, shared or owned?
+    BCFixed<1>           // nondifferentiable?
   >;
 
   using MetatypeTypeLayout = BCRecordLayout<
@@ -794,7 +814,9 @@ namespace decls_block {
     TypeIDField,         // output
     FunctionTypeRepresentationField, // representation
     BCFixed<1>,          // throws?
-    GenericSignatureIDField // generic signture
+    // SWIFT_ENABLE_TENSORFLOW
+    GenericSignatureIDField, // generic signture
+    BCFixed<3>           // differentiability
 
     // trailed by parameters
   >;
@@ -806,6 +828,8 @@ namespace decls_block {
     SILFunctionTypeRepresentationField, // representation
     BCFixed<1>,            // pseudogeneric?
     BCFixed<1>,            // noescape?
+    // SWIFT_ENABLE_TENSORFLOW
+    FunctionTypeDifferentiabilityField, // differentiability
     BCFixed<1>,            // error result?
     BCFixed<30>,           // number of parameters
     BCFixed<30>,           // number of yields
@@ -1559,6 +1583,21 @@ namespace decls_block {
     Specialize_DECL_ATTR,
     BCFixed<1>, // exported flag
     BCFixed<1> // specialization kind
+  >;
+
+  // SWIFT_ENABLE_TENSORFLOW
+  using DifferentiableDeclAttrLayout = BCRecordLayout<
+    Differentiable_DECL_ATTR,
+    BCFixed<1>, // Differentiation mode ('forward' or 'reverse').
+    IdentifierIDField, // Primal name.
+    DeclIDField, // Primal function declaration.
+    IdentifierIDField, // Adjoint name.
+    DeclIDField, // Adjoint function declaration.
+    IdentifierIDField, // JVP name.
+    DeclIDField, // JVP function declaration.
+    IdentifierIDField, // VJP name.
+    DeclIDField, // VJP function declaration.
+    BCArray<BCFixed<32>> // Differentiation parameters.
   >;
 
 #define SIMPLE_DECL_ATTR(X, CLASS, ...) \

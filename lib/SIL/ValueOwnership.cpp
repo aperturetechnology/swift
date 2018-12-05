@@ -273,6 +273,10 @@ FORWARDING_OWNERSHIP_INST(UnconditionalCheckedCast)
 FORWARDING_OWNERSHIP_INST(Upcast)
 FORWARDING_OWNERSHIP_INST(MarkUninitialized)
 FORWARDING_OWNERSHIP_INST(UncheckedEnumData)
+// SWIFT_ENABLE_TENSORFLOW
+FORWARDING_OWNERSHIP_INST(Gradient)
+FORWARDING_OWNERSHIP_INST(AutoDiffFunction)
+FORWARDING_OWNERSHIP_INST(AutoDiffFunctionExtract)
 #undef FORWARDING_OWNERSHIP_INST
 
 ValueOwnershipKind
@@ -312,6 +316,12 @@ ValueOwnershipKind ValueOwnershipKindClassifier::visitDestructureStructResult(
 
 ValueOwnershipKind ValueOwnershipKindClassifier::visitDestructureTupleResult(
     DestructureTupleResult *Result) {
+  return Result->getOwnershipKind();
+}
+
+// SWIFT_ENABLE_TENSORFLOW
+ValueOwnershipKind ValueOwnershipKindClassifier::visitGraphOperationResult(
+    GraphOperationResult *Result) {
   return Result->getOwnershipKind();
 }
 
@@ -541,6 +551,15 @@ CONSTANT_OWNERSHIP_BUILTIN(Trivial, Once)
 CONSTANT_OWNERSHIP_BUILTIN(Trivial, OnceWithContext)
 CONSTANT_OWNERSHIP_BUILTIN(Trivial, TSanInoutAccess)
 CONSTANT_OWNERSHIP_BUILTIN(Trivial, Swift3ImplicitObjCEntrypoint)
+
+// SWIFT_ENABLE_TENSORFLOW
+CONSTANT_OWNERSHIP_BUILTIN(Trivial, TensorFlowSend)
+CONSTANT_OWNERSHIP_BUILTIN(Trivial, TensorFlowReceive)
+CONSTANT_OWNERSHIP_BUILTIN(Trivial, AutoDiffCreateTape)
+CONSTANT_OWNERSHIP_BUILTIN(Trivial, AutoDiffPushToTape)
+CONSTANT_OWNERSHIP_BUILTIN(Trivial, AutoDiffPopFromTape)
+CONSTANT_OWNERSHIP_BUILTIN(Trivial, AutoDiffDestroyTape)
+CONSTANT_OWNERSHIP_BUILTIN(Trivial, PoundAssert)
 
 #undef CONSTANT_OWNERSHIP_BUILTIN
 

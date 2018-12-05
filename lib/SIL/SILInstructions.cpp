@@ -23,6 +23,8 @@
 #include "swift/SIL/Projection.h"
 #include "swift/SIL/SILBuilder.h"
 #include "swift/SIL/SILCloner.h"
+// SWIFT_ENABLE_TENSORFLOW
+#include "swift/SIL/SILConstants.h"
 #include "swift/SIL/SILInstruction.h"
 #include "swift/SIL/SILModule.h"
 #include "swift/SIL/SILVisitor.h"
@@ -575,6 +577,122 @@ TryApplyInst *TryApplyInst::create(
   return ::new (buffer) TryApplyInst(loc, callee, substCalleeTy, subs, args,
                                      typeDependentOperands,
                                      normalBB, errorBB, specializationInfo);
+}
+
+/// SWIFT_ENABLE_TENSORFLOW
+GradientInst::GradientInst(SILModule &module, SILDebugLocation debugLoc,
+                           SILValue original,
+                           const SILAutoDiffConfig &config)
+  : InstructionBase(debugLoc,
+                    getGradientSILType(module, original, config)),
+    Config(config), Operands(this, original) {}
+
+SILType GradientInst::getGradientSILType(
+    SILModule &module, SILValue original,
+    const SILAutoDiffConfig &config) {
+  // If parameter indices are empty, return an invalid type (empty tuple type).
+  // An "empty parameter indices" will be produced during verification.
+  if (config.indices.parameters.none()) {
+    auto invalidTy = TupleType::get({}, module.getASTContext());
+    return SILType::getPrimitiveObjectType(CanType(invalidTy));
+  }
+  auto origFnTy = original->getType().castTo<SILFunctionType>();
+  auto gradFnTy = origFnTy->getGradientType(config, module);
+  return SILType::getPrimitiveObjectType(gradFnTy->getCanonicalType());
+}
+
+GradientInst *
+GradientInst::create(SILModule &M, SILDebugLocation debugLoc,
+                     SILValue original,
+                     const SILAutoDiffConfig &config) {
+  void *buffer = M.allocateInst(sizeof(GradientInst), alignof(GradientInst));
+  return ::new (buffer) GradientInst(M, debugLoc, original, config);
+}
+
+SILType
+AutoDiffFunctionInst::getAutoDiffType(SILValue originalFunction,
+                                      unsigned differentiationOrder,
+                                      const SmallBitVector &parameterIndices) {
+  auto fnTy = originalFunction->getType().castTo<SILFunctionType>();
+  auto diffTy =
+      fnTy->getWithDifferentiability(differentiationOrder, parameterIndices);
+  return SILType::getPrimitiveObjectType(diffTy);
+}
+
+AutoDiffFunctionInst::AutoDiffFunctionInst(
+    SILModule &module, SILDebugLocation debugLoc,
+    const SmallBitVector &parameterIndices, unsigned differentiationOrder,
+    SILValue originalFunction, ArrayRef<SILValue> associatedFunctions)
+    : InstructionBaseWithTrailingOperands(originalFunction, associatedFunctions,
+          debugLoc, getAutoDiffType(originalFunction, differentiationOrder,
+                                    parameterIndices)),
+      parameterIndices(parameterIndices),
+      differentiationOrder(differentiationOrder),
+      numOperands(1 + associatedFunctions.size()) {
+}
+
+AutoDiffFunctionInst *AutoDiffFunctionInst::create(
+    SILModule &module, SILDebugLocation debugLoc,
+    const SmallBitVector &parameterIndices,
+    unsigned differentiationOrder, SILValue originalFunction,
+    ArrayRef<SILValue> associatedFunctions) {
+  size_t size = totalSizeToAlloc<Operand>(associatedFunctions.size() + 1);
+  void *buffer = module.allocateInst(size, alignof(AutoDiffFunctionInst));
+  return ::new (buffer) AutoDiffFunctionInst(module, debugLoc,
+                                             parameterIndices,
+                                             differentiationOrder,
+                                             originalFunction,
+                                             associatedFunctions);
+}
+
+std::pair<SILValue, SILValue> AutoDiffFunctionInst::
+getAssociatedFunctionPair(unsigned differentiationOrder) const {
+  assert(differentiationOrder > 0 &&
+         differentiationOrder <= this->differentiationOrder);
+  assert(!getAssociatedFunctions().empty() && "No associated functions. Maybe "
+         "the differentiation pass has not run?");
+  auto offset = (differentiationOrder - 1) * 2;
+  auto assocFns = getAssociatedFunctions();
+  return {assocFns[offset].get(), assocFns[offset+1].get()};
+}
+
+SILValue AutoDiffFunctionInst::
+getAssociatedFunction(unsigned differentiationOrder,
+                      AutoDiffAssociatedFunctionKind kind) const {
+  assert(differentiationOrder > 0 &&
+         differentiationOrder <= this->differentiationOrder);
+  auto offset = autodiff::getOffsetForAutoDiffAssociatedFunction(
+      differentiationOrder, kind);
+  return getAssociatedFunctions()[offset].get();
+}
+
+SILType AutoDiffFunctionExtractInst::
+getAssociatedFunctionType(SILValue function,
+                          AutoDiffAssociatedFunctionKind kind,
+                          unsigned differentiationOrder,
+                          SILModule &module) {
+  auto fnTy = function->getType().castTo<SILFunctionType>();
+  assert(fnTy->getExtInfo().isDifferentiable());
+  auto originalFnTy =
+      fnTy->getWithExtInfo(fnTy->getExtInfo().withDifferentiability(
+          FunctionTypeDifferentiability::None));
+  // FIXME: Get indices from the @autodiff function type.
+  auto assocFnTy = originalFnTy->getAutoDiffAssociatedFunctionType(
+      SmallBitVector(originalFnTy->getNumParameters(), true),
+      differentiationOrder, kind, module,
+      LookUpConformanceInModule(module.getSwiftModule()));
+  return SILType::getPrimitiveObjectType(assocFnTy);
+}
+
+AutoDiffFunctionExtractInst::AutoDiffFunctionExtractInst(
+    SILModule &module, SILDebugLocation debugLoc,
+    AutoDiffAssociatedFunctionKind associatedFunctionKind,
+    unsigned differentiationOrder, SILValue theFunction)
+    : InstructionBase(debugLoc, getAssociatedFunctionType(
+          theFunction, associatedFunctionKind, differentiationOrder, module)),
+      associatedFunctionKind(associatedFunctionKind),
+      differentiationOrder(differentiationOrder),
+      operands(this, theFunction) {
 }
 
 FunctionRefInst::FunctionRefInst(SILDebugLocation Loc, SILFunction *F)
@@ -2412,3 +2530,60 @@ DestructureTupleInst *DestructureTupleInst::create(SILModule &M,
   return ::new (Buffer)
       DestructureTupleInst(M, Loc, Operand, Types, OwnershipKinds);
 }
+
+// SWIFT_ENABLE_TENSORFLOW
+GraphOperationInst::GraphOperationInst(
+    SILModule &M, SILDebugLocation loc, Identifier name,
+    ArrayRef<SILValue> arguments, ArrayRef<GraphOperationAttribute> attrs,
+    bool noClustering, ArrayRef<SILType> resultTypes,
+    ArrayRef<ValueOwnershipKind> resultOwnerships)
+    : InstructionBase(loc), MultipleValueInstructionTrailingObjects(
+                                this, resultTypes, resultOwnerships),
+      Name(name), NumOperands(arguments.size()), NoClustering(noClustering) {
+  auto allOperands = getAllOperands();
+  for (unsigned i : indices(arguments))
+    new (&allOperands[i]) Operand(this, arguments[i]);
+  auto attrBuf = new GraphOperationAttribute[attrs.size()];
+  Attributes = MutableArrayRef<GraphOperationAttribute>(
+    static_cast<GraphOperationAttribute *>(attrBuf), attrs.size());
+  std::uninitialized_copy(attrs.begin(), attrs.end(), Attributes.data());
+}
+
+GraphOperationInst::~GraphOperationInst() {
+  for (auto &operand : getAllOperands())
+    operand.~Operand();
+  delete[] getAttributes().data();
+}
+
+GraphOperationInst *
+GraphOperationInst::create(SILModule &M, SILDebugLocation loc, Identifier name,
+                           ArrayRef<SILValue> arguments,
+                           ArrayRef<GraphOperationAttribute> attributes,
+                           bool noClustering, ArrayRef<SILType> resultTypes) {
+  llvm::SmallVector<ValueOwnershipKind, 4> resultOwnerships;
+  for (auto resultType : resultTypes) {
+    auto ownership = resultType.isTrivial(M)
+      ? ValueOwnershipKind::Trivial : ValueOwnershipKind::Owned;
+    resultOwnerships.push_back(ownership);
+  }
+
+  unsigned size =
+    totalSizeToAlloc<MultipleValueInstruction *, GraphOperationResult, Operand>(
+      1, resultTypes.size(), arguments.size());
+  void *buffer = M.allocateInst(size, alignof(GraphOperationInst));
+  return ::new (buffer)
+      GraphOperationInst(M, loc, name, arguments, attributes, noClustering,
+                         resultTypes, resultOwnerships);
+}
+
+GraphOperationAttribute GraphOperationInst::getAttribute(unsigned i) const {
+  return getAttributes()[i];
+}
+
+
+Optional<SymbolicValue> GraphOperationInst::getAttributeNamed(StringRef name) const {
+  for (auto attr : getAttributes())
+    if (attr.name.is(name))
+      return attr.value;
+  return None;
+};

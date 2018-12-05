@@ -56,6 +56,33 @@ void SILFunction::addSpecializeAttr(SILSpecializeAttr *Attr) {
   }
 }
 
+/// SWIFT_ENABLE_TENSORFLOW
+SILDifferentiableAttr::
+SILDifferentiableAttr(const SILAutoDiffIndices &indices,
+                      StringRef primalName,
+                      StringRef adjointName,
+                      bool adjointIsPrimitive,
+                      StringRef jvpName,
+                      StringRef vjpName)
+  : indices(indices), PrimalName(primalName), AdjointName(adjointName),
+    AdjointIsPrimitive(adjointIsPrimitive), JVPName(jvpName), VJPName(vjpName)
+    {}
+
+SILDifferentiableAttr *
+SILDifferentiableAttr::create(SILModule &M,
+                              const SILAutoDiffIndices &indices,
+                              StringRef primalName,
+                              StringRef adjointName,
+                              bool adjointIsPrimitive,
+                              StringRef jvpName,
+                              StringRef vjpName) {
+  void *mem = M.allocate(sizeof(SILDifferentiableAttr),
+                         alignof(SILDifferentiableAttr));
+  return ::new (mem)
+      SILDifferentiableAttr(indices, primalName, adjointName,
+                            adjointIsPrimitive, jvpName, vjpName);
+}
+
 SILFunction *SILFunction::create(
     SILModule &M, SILLinkage linkage, StringRef name,
     CanSILFunctionType loweredType, GenericEnvironment *genericEnv,
@@ -511,6 +538,13 @@ SubstitutionMap SILFunction::getForwardingSubstitutionMap() {
 
 bool SILFunction::shouldVerifyOwnership() const {
   return !hasSemanticsAttr("verify.ownership.sil.never");
+}
+
+unsigned SILFunction::codeSize() const {
+  unsigned size = 0;
+  for (auto &BB : *this)
+    size += BB.codeSize();
+  return size;
 }
 
 // See swift/Basic/Statistic.h for declaration: this enables tracing

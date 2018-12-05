@@ -473,6 +473,25 @@ Address irgen::projectBlockStorageCapture(IRGenFunction &IGF,
 }
 
 const TypeInfo *TypeConverter::convertFunctionType(SILFunctionType *T) {
+  // SWIFT_ENABLE_TENSORFLOW
+  if (T->isDifferentiable()) {
+    auto extInfo = T->getExtInfo();
+    auto newExtInfo =
+        extInfo.withDifferentiability(FunctionTypeDifferentiability::None);
+    auto origTy = T->getWithExtInfo(newExtInfo);
+    // TODO(rxwei): Use the parameter indices and diff order in the @autodiff
+    // function type.
+    auto jvpTy = origTy->getAutoDiffAssociatedFunctionType(
+        SmallBitVector(T->getNumParameters(), true),
+        /*differentiationOrder*/ 1, AutoDiffAssociatedFunctionKind::JVP,
+        IGM.getSILModule(), LookUpConformanceInModule(IGM.getSwiftModule()));
+    auto vjpTy = origTy->getAutoDiffAssociatedFunctionType(
+        SmallBitVector(T->getNumParameters(), true),
+        /*differentiationOrder*/ 1, AutoDiffAssociatedFunctionKind::VJP,
+        IGM.getSILModule(), LookUpConformanceInModule(IGM.getSwiftModule()));
+    return convertTupleType(TupleType::get({origTy, jvpTy, vjpTy}, IGM.Context)
+                                ->castTo<TupleType>());
+  }
   switch (T->getRepresentation()) {
   case SILFunctionType::Representation::Block:
     return new BlockTypeInfo(CanSILFunctionType(T),
@@ -487,6 +506,8 @@ const TypeInfo *TypeConverter::convertFunctionType(SILFunctionType *T) {
   case SILFunctionType::Representation::ObjCMethod:
   case SILFunctionType::Representation::CFunctionPointer:
   case SILFunctionType::Representation::Closure:
+  // SWIFT_ENABLE_TENSORFLOW
+  case SILFunctionType::Representation::TensorFlow:
     return ThinFuncTypeInfo::create(CanSILFunctionType(T),
                                     IGM.FunctionPtrTy,
                                     IGM.getPointerSize(),
@@ -501,7 +522,6 @@ const TypeInfo *TypeConverter::convertFunctionType(SILFunctionType *T) {
     // contexts into the pointer value, so let's not take any spare bits from
     // it.
     spareBits.appendClearBits(IGM.getPointerSize().getValueInBits());
-    
     if (T->isNoEscape()) {
       // @noescape thick functions are trivial types.
       return FuncTypeInfo::create(
@@ -540,6 +560,8 @@ getFuncSignatureInfoForLowered(IRGenModule &IGM, CanSILFunctionType type) {
   case SILFunctionType::Representation::WitnessMethod:
   case SILFunctionType::Representation::ObjCMethod:
   case SILFunctionType::Representation::Closure:
+  // SWIFT_ENABLE_TENSORFLOW
+  case SILFunctionType::Representation::TensorFlow:
     return ti.as<ThinFuncTypeInfo>();
   case SILFunctionType::Representation::Thick:
     return ti.as<FuncTypeInfo>();

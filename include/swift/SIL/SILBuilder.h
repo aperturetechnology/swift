@@ -499,6 +499,33 @@ public:
                                                  beginApply));
   }
 
+  /// SWIFT_ENABLE_TENSORFLOW
+  GradientInst *createGradient(SILLocation loc, SILValue original,
+                               const SILAutoDiffConfig &config) {
+    return insert(GradientInst::create(getModule(), getSILDebugLocation(loc),
+                                       original, config));
+  }
+
+  AutoDiffFunctionInst *createAutoDiffFunction(
+      SILLocation loc, const llvm::SmallBitVector &parameterIndices,
+      unsigned differentiationOrder, SILValue original,
+      ArrayRef<SILValue> associatedFunctions) {
+    return insert(AutoDiffFunctionInst::create(getModule(),
+                                               getSILDebugLocation(loc),
+                                               parameterIndices,
+                                               differentiationOrder,
+                                               original,
+                                               associatedFunctions));
+  }
+  
+  AutoDiffFunctionExtractInst *createAutoDiffFunctionExtract(
+      SILLocation loc, AutoDiffAssociatedFunctionKind associatedFunctionKind,
+      unsigned differentiationOrder, SILValue theFunction) {
+    return insert(new (getModule()) AutoDiffFunctionExtractInst(
+        getModule(), getSILDebugLocation(loc), associatedFunctionKind,
+        differentiationOrder, theFunction));
+  }
+
   BuiltinInst *createBuiltin(SILLocation Loc, Identifier Name, SILType ResultTy,
                              SubstitutionMap Subs,
                              ArrayRef<SILValue> Args) {
@@ -1391,6 +1418,16 @@ public:
   void emitShallowDestructureAddressOperation(
       SILLocation Loc, SILValue Operand,
       llvm::SmallVectorImpl<SILValue> &Result);
+
+  GraphOperationInst *
+  createGraphOperation(SILLocation loc, Identifier name,
+                       ArrayRef<SILValue> operands,
+                       ArrayRef<GraphOperationAttribute> attrs,
+                       bool noClustering, ArrayRef<SILType> resultTypes) {
+    return insert(
+        GraphOperationInst::create(getModule(), getSILDebugLocation(loc), name,
+                                   operands, attrs, noClustering, resultTypes));
+  }
 
   ClassMethodInst *createClassMethod(SILLocation Loc, SILValue Operand,
                                      SILDeclRef Member, SILType MethodTy) {
